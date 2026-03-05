@@ -1,0 +1,20 @@
+name: 'Dependabot PR Cleanup'
+description: 'Moves dependabot PR description to a comment and replaces it with the latest commit message'
+inputs:
+  token:
+    description: 'GitHub token with pull_requests:write'
+    required: true
+    default: '${{ github.token }}'
+  dry-run:
+    description: 'Print what would happen without making changes'
+    required: false
+    default: 'false'
+runs:
+  using: 'docker'
+  image: 'Dockerfile'
+  env:
+    GITHUB_TOKEN: '${{ inputs.token }}'
+  args:
+    - '-repo=${{ github.repository }}'
+    - '-pr=${{ github.event.pull_request.number }}'
+    - '-dry-run=${{ inputs.dry-run }}'
