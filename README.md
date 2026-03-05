@@ -1,6 +1,7 @@
 # Dependabot PR Cleanup
 
-A GitHub Action that tidies up Dependabot pull request summaries, especially for use with **GitHub merge queues**.
+A GitHub Action that tidies up Dependabot pull request summaries, especially for
+use with GitHub merge queues.
 
 ## Why?
 
@@ -48,21 +49,37 @@ jobs:
 
 ### Inputs
 
-| Input | Description | Required | Default |
-|-------|-------------|----------|---------|
-| `token` | GitHub token with `pull_requests:write` | Yes | `${{ github.token }}` |
-| `repo` | Repository in `owner/name` format | No | `${{ github.repository }}` |
-| `pr` | Pull request number | No | `${{ github.event.pull_request.number }}` |
-| `dry-run` | Print what would happen without making changes | No | `false` |
+| Input     | Description                                    | Required | Default                                   |
+| --------- | ---------------------------------------------- | -------- | ----------------------------------------- |
+| `token`   | GitHub token with `pull_requests:write`        | Yes      | `${{ github.token }}`                     |
+| `repo`    | Repository in `owner/name` format              | No       | `${{ github.repository }}`                |
+| `pr`      | Pull request number                            | No       | `${{ github.event.pull_request.number }}` |
+| `dry-run` | Print what would happen without making changes | No       | `false`                                   |
 
-### Dry run
+### Additional useful info
+
+#### Running on existing dependabot PRs
+
+And you can run this on dependabot PRs made before you configure this action in
+your repo by adding this to your repo's action's `on` block:
+
+```yaml
+workflow_dispatch:
+  inputs:
+    pr_number:
+      description: "PR number to clean up"
+      required: true
+      type: number
+```
+
+#### Dry run
 
 Preview what the action would do without modifying anything:
 
 ```yaml
 - uses: jmhodges/dependabot-pr-merge-cleanup@main
   with:
-    dry-run: 'true'
+    dry-run: "true"
 ```
 
 ## Building
