@@ -5,6 +5,14 @@ inputs:
     description: 'GitHub token with pull_requests:write'
     required: true
     default: '${{ github.token }}'
+  repo:
+    description: 'GitHub repository in owner/name format'
+    required: false
+    default: '${{ github.repository }}'
+  pr:
+    description: 'Pull request number'
+    required: false
+    default: '${{ github.event.pull_request.number }}'
   dry-run:
     description: 'Print what would happen without making changes'
     required: false
@@ -15,6 +23,6 @@ runs:
   env:
     GITHUB_TOKEN: '${{ inputs.token }}'
   args:
-    - '-repo=${{ github.repository }}'
-    - '-pr=${{ github.event.pull_request.number }}'
+    - '-repo=${{ inputs.repo }}'
+    - '-pr=${{ inputs.pr }}'
     - '-dry-run=${{ inputs.dry-run }}'
