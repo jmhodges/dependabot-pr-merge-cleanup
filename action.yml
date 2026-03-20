@@ -19,7 +19,7 @@ inputs:
     default: 'false'
 runs:
   using: 'docker'
-  image: 'Dockerfile'
+  image: 'docker://ghcr.io/jmhodges/dependabot-pr-merge-cleanup:v0.0.1'
   env:
     GITHUB_TOKEN: '${{ inputs.token }}'
   args:
