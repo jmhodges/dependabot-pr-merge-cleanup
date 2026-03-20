@@ -4,7 +4,7 @@ on:
   workflow_dispatch:
     inputs:
       version:
-        description: "Builds a docker image for a new version and opens a PR to update action.yml to reference the new image. The version should be in the format of a semver version (e.g. 1.2.3). After merging the PR, tag the release at the same version"
+        description: "Builds a docker image for a new version and opens a PR to update action.yml to reference the new image. The version should be in the format of a semver version (e.g. 1.2.3 or v1.2.3). After merging the PR, tag the release at the same version"
         required: true
         type: string
 
@@ -68,7 +68,7 @@ jobs:
       - name: Create PR
         uses: peter-evans/create-pull-request@v8.1.0
         with:
-          title: "Update image to ${{ needs.tag-and-publish.outputs.version }}"
+          title: "update action.yml image to ${{ needs.tag-and-publish.outputs.version }}"
           body: "Updates action.yml to reference image `ghcr.io/jmhodges/dependabot-pr-merge-cleanup:${{ needs.tag-and-publish.outputs.version }}`, built from tag `image-${{ needs.tag-and-publish.outputs.version }}`."
           branch: update-image-${{ needs.tag-and-publish.outputs.version }}
-          commit-message: "Update action.yml to use image ${{ needs.tag-and-publish.outputs.version }}"
+          commit-message: "update action.yml to image ${{ needs.tag-and-publish.outputs.version }}"
