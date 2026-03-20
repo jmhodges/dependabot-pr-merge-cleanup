@@ -26,3 +26,6 @@ runs:
     - '-repo=${{ inputs.repo }}'
     - '-pr=${{ inputs.pr }}'
     - '-dry-run=${{ inputs.dry-run }}'
+branding:
+  icon: 'droplet'
+  color: 'purple'
