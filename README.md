@@ -16,7 +16,7 @@ from dependabot the PR description to avoid that problem.
 
 ## What this does
 
-This action is to be run on dependabot PRs:
+This action is to be run on dependabot PRs. The two main things it does:
 
 1. Saves the original Dependabot PR description as a comment (so nothing is lost)
 2. Replaces the PR body with the latest commit message
@@ -24,8 +24,12 @@ This action is to be run on dependabot PRs:
 So, we get a smaller commit that still links out to useful info about the
 version bump.
 
-(This action also checks if that work has already been done, and if so, it
-doesn't do it again. Idempotency!)
+This action also checks if that work has already been done, and if so, it
+doesn't do it again. Idempotency!
+
+And while it's probably best to check what user made the PR and skip this module
+in the Action it's called in, this code will also double check that the PR it's
+called for was made by dependabot.
 
 ## Usage
 
