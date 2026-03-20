@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
+	"strconv"
 	"strings"
 )
 
@@ -37,10 +39,29 @@ type Comment struct {
 	Body string `json:"body"`
 }
 
+// apiURL builds an API URL by escaping each path segment individually, then
+// joining them onto BaseURL. This prevents values like "foo/bar" from
+// introducing extra path segments. Callers can add query parameters to the
+// returned *url.URL before calling .String().
+func (c *GitHubClient) apiURL(segments ...string) (*url.URL, error) {
+	escaped := make([]string, len(segments))
+	for i, seg := range segments {
+		escaped[i] = url.PathEscape(seg)
+	}
+	s, err := url.JoinPath(c.BaseURL, escaped...)
+	if err != nil {
+		return nil, err
+	}
+	return url.Parse(s)
+}
+
 // GetPR fetches a pull request by number.
 func (c *GitHubClient) GetPR(owner, repo string, number int) (*PR, error) {
-	url := fmt.Sprintf("%s/repos/%s/%s/pulls/%d", c.BaseURL, owner, repo, number)
-	body, err := c.get(url)
+	u, err := c.apiURL("repos", owner, repo, "pulls", strconv.Itoa(number))
+	if err != nil {
+		return nil, fmt.Errorf("build URL: %w", err)
+	}
+	body, err := c.get(u.String())
 	if err != nil {
 		return nil, fmt.Errorf("get PR: %w", err)
 	}
@@ -58,11 +79,17 @@ func (c *GitHubClient) GetLatestCommit(owner, repo string, number int) (*Commit,
 	// GitHub returns commits in chronological order. Fetch the last page to
 	// get the most recent commit. For dependabot PRs this is almost always a
 	// single page, but we handle pagination to be safe.
-	url := fmt.Sprintf("%s/repos/%s/%s/pulls/%d/commits?per_page=100", c.BaseURL, owner, repo, number)
+	u, err := c.apiURL("repos", owner, repo, "pulls", strconv.Itoa(number), "commits")
+	if err != nil {
+		return nil, fmt.Errorf("build URL: %w", err)
+	}
+	q := u.Query()
+	q.Set("per_page", "100")
+	u.RawQuery = q.Encode()
 
 	var latest *Commit
-	for url != "" {
-		body, linkNext, err := c.getWithLink(url)
+	for next := u.String(); next != ""; {
+		body, linkNext, err := c.getWithLink(next)
 		if err != nil {
 			return nil, fmt.Errorf("get commits: %w", err)
 		}
@@ -77,7 +104,7 @@ func (c *GitHubClient) GetLatestCommit(owner, repo string, number int) (*Commit,
 		if len(commits) > 0 {
 			latest = &commits[len(commits)-1]
 		}
-		url = linkNext
+		next = linkNext
 	}
 
 	if latest == nil {
@@ -88,8 +115,15 @@ func (c *GitHubClient) GetLatestCommit(owner, repo string, number int) (*Commit,
 
 // GetComments returns all comments on a PR/issue.
 func (c *GitHubClient) GetComments(owner, repo string, number int) ([]Comment, error) {
-	url := fmt.Sprintf("%s/repos/%s/%s/issues/%d/comments?per_page=100", c.BaseURL, owner, repo, number)
-	body, err := c.get(url)
+	u, err := c.apiURL("repos", owner, repo, "issues", strconv.Itoa(number), "comments")
+	if err != nil {
+		return nil, fmt.Errorf("build URL: %w", err)
+	}
+	q := u.Query()
+	q.Set("per_page", "100")
+	u.RawQuery = q.Encode()
+
+	body, err := c.get(u.String())
 	if err != nil {
 		return nil, fmt.Errorf("get comments: %w", err)
 	}
@@ -104,16 +138,28 @@ func (c *GitHubClient) GetComments(owner, repo string, number int) ([]Comment, e
 
 // PostComment creates a new comment on a PR/issue.
 func (c *GitHubClient) PostComment(owner, repo string, number int, commentBody string) error {
-	url := fmt.Sprintf("%s/repos/%s/%s/issues/%d/comments", c.BaseURL, owner, repo, number)
-	payload := fmt.Sprintf(`{"body":%s}`, jsonString(commentBody))
-	return c.post(url, payload)
+	u, err := c.apiURL("repos", owner, repo, "issues", strconv.Itoa(number), "comments")
+	if err != nil {
+		return fmt.Errorf("build URL: %w", err)
+	}
+	payload, err := json.Marshal(map[string]string{"body": commentBody})
+	if err != nil {
+		return fmt.Errorf("marshal comment: %w", err)
+	}
+	return c.post(u.String(), string(payload))
 }
 
 // UpdatePRBody replaces the body/description of a pull request.
 func (c *GitHubClient) UpdatePRBody(owner, repo string, number int, body string) error {
-	url := fmt.Sprintf("%s/repos/%s/%s/pulls/%d", c.BaseURL, owner, repo, number)
-	payload := fmt.Sprintf(`{"body":%s}`, jsonString(body))
-	return c.patch(url, payload)
+	u, err := c.apiURL("repos", owner, repo, "pulls", strconv.Itoa(number))
+	if err != nil {
+		return fmt.Errorf("build URL: %w", err)
+	}
+	payload, err := json.Marshal(map[string]string{"body": body})
+	if err != nil {
+		return fmt.Errorf("marshal body: %w", err)
+	}
+	return c.patch(u.String(), string(payload))
 }
 
 // --- HTTP helpers ---
@@ -220,8 +266,3 @@ func parseLinkNext(header string) string {
 	return ""
 }
 
-// jsonString returns s as a JSON-encoded string literal (with escaping).
-func jsonString(s string) string {
-	b, _ := json.Marshal(s)
-	return string(b)
-}

@@ -183,6 +183,42 @@ func TestUpdatePRBody(t *testing.T) {
 	}
 }
 
+func TestAPIURL(t *testing.T) {
+	client := &GitHubClient{BaseURL: "https://api.github.com"}
+	tests := []struct {
+		name     string
+		segments []string
+		want     string
+	}{
+		{
+			"normal path",
+			[]string{"repos", "owner", "repo", "pulls", "42"},
+			"https://api.github.com/repos/owner/repo/pulls/42",
+		},
+		{
+			"owner with slash is escaped",
+			[]string{"repos", "owner/evil", "repo", "pulls", "1"},
+			"https://api.github.com/repos/owner%2Fevil/repo/pulls/1",
+		},
+		{
+			"repo with special chars",
+			[]string{"repos", "owner", "repo?q=1#frag", "pulls", "1"},
+			"https://api.github.com/repos/owner/repo%3Fq=1%23frag/pulls/1",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := client.apiURL(tt.segments...)
+			if err != nil {
+				t.Fatalf("apiURL: %v", err)
+			}
+			if got.String() != tt.want {
+				t.Errorf("apiURL(%v) = %q, want %q", tt.segments, got.String(), tt.want)
+			}
+		})
+	}
+}
+
 func TestParseLinkNext(t *testing.T) {
 	tests := []struct {
 		name   string
