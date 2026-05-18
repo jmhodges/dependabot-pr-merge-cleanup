@@ -9,7 +9,10 @@ import (
 	"strings"
 )
 
-const commentHeader = "## Original PR Description"
+const (
+	commentHeader   = "## Original PR Description"
+	dependabotLogin = "dependabot[bot]"
+)
 
 func main() {
 	repo := flag.String("repo", "", "owner/repo (or set GITHUB_REPOSITORY)")
@@ -76,7 +79,7 @@ func run(client *GitHubClient, owner, repo string, prNumber int, dryRun bool) er
 	}
 
 	// 2. Only operate on dependabot PRs.
-	if pr.User.Login != "dependabot[bot]" {
+	if pr.User.Login != dependabotLogin {
 		fmt.Printf("PR #%d is by %s, not dependabot — skipping.\n", prNumber, pr.User.Login)
 		return nil
 	}
@@ -87,8 +90,8 @@ func run(client *GitHubClient, owner, repo string, prNumber int, dryRun bool) er
 		return nil
 	}
 
-	// 4. Get the latest commit message to use as the new body.
-	commit, err := client.GetLatestCommit(owner, repo, prNumber)
+	// 4. Get the latest dependabot commit message to use as the new body.
+	commit, err := client.GetLatestDependabotCommit(owner, repo, prNumber)
 	if err != nil {
 		return fmt.Errorf("fetching commits for PR #%d: %w", prNumber, err)
 	}

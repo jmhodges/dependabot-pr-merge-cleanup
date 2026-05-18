@@ -67,42 +67,117 @@ func TestGetPR_NotFound(t *testing.T) {
 	}
 }
 
-func TestGetLatestCommit(t *testing.T) {
+// dependabotCommit builds a Commit fixture authored by dependabot.
+func dependabotCommit(sha, msg string) Commit {
+	return commitBy(sha, msg, dependabotLogin)
+}
+
+// commitBy builds a Commit fixture with the given author login.
+func commitBy(sha, msg, login string) Commit {
+	var c Commit
+	c.SHA = sha
+	c.Commit.Message = msg
+	c.Author.Login = login
+	return c
+}
+
+func TestGetLatestDependabotCommit(t *testing.T) {
 	srv, client := newTestServer(t, func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != "GET" || !strings.HasPrefix(r.URL.Path, "/repos/owner/repo/pulls/42/commits") {
 			http.Error(w, "not found", http.StatusNotFound)
 			return
 		}
-		commits := []Commit{
-			{SHA: "aaa", Commit: struct {
-				Message string `json:"message"`
-			}{Message: "first commit"}},
-			{SHA: "bbb", Commit: struct {
-				Message string `json:"message"`
-			}{Message: "Bump foo from 1.0 to 2.0"}},
-		}
-		json.NewEncoder(w).Encode(commits)
+		json.NewEncoder(w).Encode([]Commit{
+			dependabotCommit("aaa", "first commit"),
+			dependabotCommit("bbb", "Bump foo from 1.0 to 2.0"),
+		})
 	})
 	defer srv.Close()
 
-	commit, err := client.GetLatestCommit("owner", "repo", 42)
+	commit, err := client.GetLatestDependabotCommit("owner", "repo", 42)
 	if err != nil {
-		t.Fatalf("GetLatestCommit: %v", err)
+		t.Fatalf("GetLatestDependabotCommit: %v", err)
 	}
 	if commit.Commit.Message != "Bump foo from 1.0 to 2.0" {
 		t.Errorf("message = %q, want %q", commit.Commit.Message, "Bump foo from 1.0 to 2.0")
 	}
 }
 
-func TestGetLatestCommit_NoCommits(t *testing.T) {
+// A maintainer's rebase fixup commit on top of a dependabot PR must not
+// shadow the underlying dependabot commit.
+func TestGetLatestDependabotCommit_SkipsNonDependabot(t *testing.T) {
+	srv, client := newTestServer(t, func(w http.ResponseWriter, r *http.Request) {
+		json.NewEncoder(w).Encode([]Commit{
+			dependabotCommit("aaa", "Bump foo from 1.0 to 2.0"),
+			commitBy("bbb", "fix lint", "human-user"),
+		})
+	})
+	defer srv.Close()
+
+	commit, err := client.GetLatestDependabotCommit("owner", "repo", 42)
+	if err != nil {
+		t.Fatalf("GetLatestDependabotCommit: %v", err)
+	}
+	if commit.SHA != "aaa" {
+		t.Errorf("sha = %q, want aaa (the dependabot commit)", commit.SHA)
+	}
+}
+
+// The dependabot commit may live on an earlier page than the non-dependabot
+// commits that follow it; the filter must keep working across pages.
+func TestGetLatestDependabotCommit_PaginationFiltersAcrossPages(t *testing.T) {
+	var srv *httptest.Server
+	srv, client := newTestServer(t, func(w http.ResponseWriter, r *http.Request) {
+		page := r.URL.Query().Get("page")
+		switch page {
+		case "", "1":
+			nextURL := srv.URL + "/repos/owner/repo/pulls/42/commits?page=2"
+			w.Header().Set("Link", `<`+nextURL+`>; rel="next"`)
+			json.NewEncoder(w).Encode([]Commit{
+				dependabotCommit("aaa", "Bump foo from 1.0 to 2.0"),
+			})
+		case "2":
+			json.NewEncoder(w).Encode([]Commit{
+				commitBy("bbb", "fix lint", "human-user"),
+			})
+		default:
+			http.Error(w, "unexpected page "+page, http.StatusBadRequest)
+		}
+	})
+	defer srv.Close()
+
+	commit, err := client.GetLatestDependabotCommit("owner", "repo", 42)
+	if err != nil {
+		t.Fatalf("GetLatestDependabotCommit: %v", err)
+	}
+	if commit.SHA != "aaa" {
+		t.Errorf("sha = %q, want aaa", commit.SHA)
+	}
+}
+
+func TestGetLatestDependabotCommit_NoCommits(t *testing.T) {
 	srv, client := newTestServer(t, func(w http.ResponseWriter, r *http.Request) {
 		json.NewEncoder(w).Encode([]Commit{})
 	})
 	defer srv.Close()
 
-	_, err := client.GetLatestCommit("owner", "repo", 42)
+	_, err := client.GetLatestDependabotCommit("owner", "repo", 42)
 	if err == nil {
 		t.Fatal("expected error for empty commits")
+	}
+}
+
+func TestGetLatestDependabotCommit_NoDependabotCommits(t *testing.T) {
+	srv, client := newTestServer(t, func(w http.ResponseWriter, r *http.Request) {
+		json.NewEncoder(w).Encode([]Commit{
+			commitBy("aaa", "manual change", "human-user"),
+		})
+	})
+	defer srv.Close()
+
+	_, err := client.GetLatestDependabotCommit("owner", "repo", 42)
+	if err == nil {
+		t.Fatal("expected error when no commits are by dependabot")
 	}
 }
 
@@ -259,9 +334,7 @@ func TestHappyPathIntegration(t *testing.T) {
 
 		case r.Method == "GET" && strings.HasPrefix(r.URL.Path, "/repos/owner/repo/pulls/10/commits"):
 			json.NewEncoder(w).Encode([]Commit{
-				{SHA: "abc", Commit: struct {
-					Message string `json:"message"`
-				}{Message: "Bump foo from 1.0 to 2.0\n\nSigned-off-by: dependabot[bot] <support@github.com>"}},
+				dependabotCommit("abc", "Bump foo from 1.0 to 2.0\n\nSigned-off-by: dependabot[bot] <support@github.com>"),
 			})
 
 		case r.Method == "GET" && strings.HasPrefix(r.URL.Path, "/repos/owner/repo/issues/10/comments"):
@@ -365,9 +438,7 @@ func TestDryRun(t *testing.T) {
 			})
 		case r.Method == "GET" && strings.HasPrefix(r.URL.Path, "/repos/owner/repo/pulls/10/commits"):
 			json.NewEncoder(w).Encode([]Commit{
-				{SHA: "abc", Commit: struct {
-					Message string `json:"message"`
-				}{Message: "Bump bar from 1.0 to 2.0"}},
+				dependabotCommit("abc", "Bump bar from 1.0 to 2.0"),
 			})
 		case r.Method == "GET" && strings.HasPrefix(r.URL.Path, "/repos/owner/repo/issues/10/comments"):
 			json.NewEncoder(w).Encode([]Comment{})
@@ -444,9 +515,7 @@ func TestIdempotency_SkipsDuplicateComment(t *testing.T) {
 			})
 		case r.Method == "GET" && strings.HasPrefix(r.URL.Path, "/repos/owner/repo/pulls/10/commits"):
 			json.NewEncoder(w).Encode([]Commit{
-				{SHA: "abc", Commit: struct {
-					Message string `json:"message"`
-				}{Message: "Bump baz from 1.0 to 2.0"}},
+				dependabotCommit("abc", "Bump baz from 1.0 to 2.0"),
 			})
 		case r.Method == "GET" && strings.HasPrefix(r.URL.Path, "/repos/owner/repo/issues/10/comments"):
 			// Return a comment that already has the Original PR Description header.

@@ -32,6 +32,9 @@ type Commit struct {
 	Commit struct {
 		Message string `json:"message"`
 	} `json:"commit"`
+	Author struct {
+		Login string `json:"login"`
+	} `json:"author"`
 }
 
 // Comment holds a single issue/PR comment.
@@ -74,11 +77,10 @@ func (c *GitHubClient) GetPR(owner, repo string, number int) (*PR, error) {
 	return &pr, nil
 }
 
-// GetLatestCommit returns the most recent commit on a pull request.
-func (c *GitHubClient) GetLatestCommit(owner, repo string, number int) (*Commit, error) {
-	// GitHub returns commits in chronological order. Fetch the last page to
-	// get the most recent commit. For dependabot PRs this is almost always a
-	// single page, but we handle pagination to be safe.
+// GetLatestDependabotCommit returns the most recent commit authored by
+// dependabot[bot] on a pull request, ignoring any commits a human or other
+// bot pushed on top (e.g. a maintainer's rebase fixup).
+func (c *GitHubClient) GetLatestDependabotCommit(owner, repo string, number int) (*Commit, error) {
 	u, err := c.apiURL("repos", owner, repo, "pulls", strconv.Itoa(number), "commits")
 	if err != nil {
 		return nil, fmt.Errorf("build URL: %w", err)
@@ -87,6 +89,9 @@ func (c *GitHubClient) GetLatestCommit(owner, repo string, number int) (*Commit,
 	q.Set("per_page", "100")
 	u.RawQuery = q.Encode()
 
+	// GitHub returns commits in ascending chronological order and the
+	// endpoint does not support reversing. Scan forward across all pages and
+	// keep the last dependabot commit we see.
 	var latest *Commit
 	for next := u.String(); next != ""; {
 		body, linkNext, err := c.getWithLink(next)
@@ -101,14 +106,16 @@ func (c *GitHubClient) GetLatestCommit(owner, repo string, number int) (*Commit,
 		}
 		body.Close()
 
-		if len(commits) > 0 {
-			latest = &commits[len(commits)-1]
+		for i := range commits {
+			if commits[i].Author.Login == dependabotLogin {
+				latest = &commits[i]
+			}
 		}
 		next = linkNext
 	}
 
 	if latest == nil {
-		return nil, fmt.Errorf("PR has no commits")
+		return nil, fmt.Errorf("PR has no commits by %s", dependabotLogin)
 	}
 	return latest, nil
 }
