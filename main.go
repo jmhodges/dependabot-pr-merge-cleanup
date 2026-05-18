@@ -8,6 +8,7 @@ import (
 	"os"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/google/go-github/v76/github"
 )
@@ -64,7 +65,10 @@ func main() {
 
 	client := &ghClient{gh: github.NewClient(nil).WithAuthToken(token)}
 
-	if err := run(context.Background(), client, owner, repoName, *prNum, *dryRun); err != nil {
+	ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
+	defer cancel()
+
+	if err := run(ctx, client, owner, repoName, *prNum, *dryRun); err != nil {
 		fmt.Fprintf(os.Stderr, "error: %v\n", err)
 		os.Exit(1)
 	}
