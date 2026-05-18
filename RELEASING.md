@@ -12,8 +12,8 @@ git tags:
   built from. Created automatically by the release workflow.
 - `vX.Y.Z` — points at the merge commit of the `action.yml` update PR. This
   is what consumers should pin to (e.g.,
-  `uses: jmhodges/dependabot-pr-merge-cleanup@v1.0.1`). Created manually
-  after the PR merges.
+  `uses: jmhodges/dependabot-pr-merge-cleanup@v1.0.1`). Created by
+  publishing a GitHub Release after the PR merges.
 
 ## Prerequisites
 
@@ -55,23 +55,20 @@ The workflow itself declares these permissions in `build-for-release.yml`:
 3. **Review and merge the PR.** Confirm the `action.yml` diff only changes
    the image tag to the new version, then merge it.
 
-4. **Tag the release.** Once the PR is merged, tag the merge commit on
-   `main`:
+4. **Publish a GitHub Release.** Once the PR is merged, publishing the
+   release through GitHub's UI creates the `vX.Y.Z` tag at the same time —
+   no separate `git tag` step is needed.
 
-   ```sh
-   git checkout main
-   git pull
-   git tag vX.Y.Z
-   git push origin vX.Y.Z
-   ```
-
-5. **Create a GitHub Release.**
    - Go to [Releases](../../releases) and click **Draft a new release**.
-   - Choose the `vX.Y.Z` tag you just pushed.
+   - Under **Choose a tag**, type `vX.Y.Z` and select **Create new tag:
+     `vX.Y.Z` on publish**.
+   - Leave the target as `main` so the tag lands on the merge commit of the
+     `action.yml` update PR.
    - Set the title to `vX.Y.Z`.
    - Click **Generate release notes** to auto-populate the changelog from
      PRs merged since the previous release; edit as needed.
-   - Publish the release.
+   - Click **Publish release**. This creates the `vX.Y.Z` tag and publishes
+     the release in one step.
 
 ## Rollback
 
