@@ -15,23 +15,6 @@ git tags:
   `uses: jmhodges/dependabot-pr-merge-cleanup@v1.0.1`). Created by
   publishing a GitHub Release after the PR merges.
 
-## Prerequisites
-
-The release workflow needs a repository secret named
-`CREATE_PULL_REQUEST_TOKEN`: a personal access token (classic with `repo`
-scope, or a fine-grained token with `contents: write` and
-`pull-requests: write` on this repository). It's used by
-[`peter-evans/create-pull-request`](https://github.com/peter-evans/create-pull-request)
-to open the `action.yml` update PR. The default `GITHUB_TOKEN` can't be used
-here because PRs it opens don't trigger other workflows (such as required
-status checks).
-
-The workflow itself declares these permissions in `build-for-release.yml`:
-
-- `contents: write` — to push the `image-vX.Y.Z` tag
-- `packages: write` — to push the Docker image to GHCR
-- `pull-requests: write` — for the `create-pull-request` action
-
 ## Steps
 
 1. **Pick a version.** Use semver based on the changes since the last
@@ -79,3 +62,36 @@ tags or image — consumers may already be pinned to them. Instead:
    back to the previous good image).
 2. Cut a new patch release following the steps above. The bad image tag can
    stay on GHCR; nothing will reference it once `action.yml` is updated.
+
+## Troubleshooting
+
+You shouldn't need any of this for a normal release, but if the workflow
+fails or the setup ever needs to be reproduced (e.g., in a fork), here's
+what's wired up behind the scenes.
+
+### The `action.yml` update PR never appears
+
+The workflow's `open-pr` job uses
+[`peter-evans/create-pull-request`](https://github.com/peter-evans/create-pull-request)
+with a repository secret named `CREATE_PULL_REQUEST_TOKEN`. This needs to
+be a personal access token (classic with `repo` scope, or a fine-grained
+token with `contents: write` and `pull-requests: write` on this
+repository).
+
+The default `GITHUB_TOKEN` is deliberately *not* used here: PRs opened by
+it don't trigger other workflows, so required status checks would never
+run on the `action.yml` update PR.
+
+If the job fails at the "Create PR" step, the token is usually missing,
+expired, or lacks one of the scopes above.
+
+### Workflow permissions
+
+`build-for-release.yml` declares these top-level permissions, which the
+`GITHUB_TOKEN` uses for the steps that aren't gated on
+`CREATE_PULL_REQUEST_TOKEN`:
+
+- `contents: write` — to push the `image-vX.Y.Z` tag
+- `packages: write` — to push the Docker image to GHCR
+- `pull-requests: write` — held for completeness; the actual PR creation
+  uses `CREATE_PULL_REQUEST_TOKEN`
