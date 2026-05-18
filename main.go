@@ -1,12 +1,15 @@
 package main
 
 import (
+	"context"
+	"errors"
 	"flag"
 	"fmt"
-	"net/http"
 	"os"
 	"strconv"
 	"strings"
+
+	"github.com/google/go-github/v76/github"
 )
 
 const (
@@ -14,13 +17,16 @@ const (
 	dependabotLogin = "dependabot[bot]"
 )
 
+// errNoDependabotCommits is returned when a PR has no commits authored by
+// dependabot (sentinel so tests can match exactly without string comparisons).
+var errNoDependabotCommits = errors.New("PR has no commits by " + dependabotLogin)
+
 func main() {
 	repo := flag.String("repo", "", "owner/repo (or set GITHUB_REPOSITORY)")
 	prNum := flag.Int("pr", 0, "pull request number (or set PR_NUMBER)")
 	dryRun := flag.Bool("dry-run", false, "print what would happen without making changes")
 	flag.Parse()
 
-	// Resolve flags from env fallbacks.
 	if *repo == "" {
 		*repo = os.Getenv("GITHUB_REPOSITORY")
 	}
@@ -35,7 +41,6 @@ func main() {
 		}
 	}
 
-	// Validate required inputs.
 	token := os.Getenv("GITHUB_TOKEN")
 	if token == "" {
 		fmt.Fprintln(os.Stderr, "error: GITHUB_TOKEN environment variable is required")
@@ -57,54 +62,45 @@ func main() {
 	}
 	owner, repoName := parts[0], parts[1]
 
-	client := &GitHubClient{
-		BaseURL:    "https://api.github.com",
-		Token:      token,
-		HTTPClient: http.DefaultClient,
-	}
+	client := &ghClient{gh: github.NewClient(nil).WithAuthToken(token)}
 
-	if err := run(client, owner, repoName, *prNum, *dryRun); err != nil {
+	if err := run(context.Background(), client, owner, repoName, *prNum, *dryRun); err != nil {
 		fmt.Fprintf(os.Stderr, "error: %v\n", err)
 		os.Exit(1)
 	}
 }
 
 // run contains the core orchestration logic, separated from main() so it can
-// be tested with a mock GitHubClient.
-func run(client *GitHubClient, owner, repo string, prNumber int, dryRun bool) error {
-	// 1. Fetch the PR.
-	pr, err := client.GetPR(owner, repo, prNumber)
+// be tested with a ghClient pointed at httptest.NewServer.
+func run(ctx context.Context, client *ghClient, owner, repo string, prNumber int, dryRun bool) error {
+	pr, err := client.GetPR(ctx, owner, repo, prNumber)
 	if err != nil {
 		return fmt.Errorf("fetching PR #%d: %w", prNumber, err)
 	}
 
-	// 2. Only operate on dependabot PRs.
-	if pr.User.Login != dependabotLogin {
-		fmt.Printf("PR #%d is by %s, not dependabot — skipping.\n", prNumber, pr.User.Login)
+	if pr.GetUser().GetLogin() != dependabotLogin {
+		fmt.Printf("PR #%d is by %s, not dependabot — skipping.\n", prNumber, pr.GetUser().GetLogin())
 		return nil
 	}
 
-	// 3. Nothing to do if the body is already empty.
-	if strings.TrimSpace(pr.Body) == "" {
+	if strings.TrimSpace(pr.GetBody()) == "" {
 		fmt.Printf("PR #%d has an empty body — nothing to preserve.\n", prNumber)
 		return nil
 	}
 
-	// 4. Get the latest dependabot commit message to use as the new body.
-	commit, err := client.GetLatestDependabotCommit(owner, repo, prNumber)
+	commit, err := client.LatestDependabotCommit(ctx, owner, repo, prNumber)
 	if err != nil {
 		return fmt.Errorf("fetching commits for PR #%d: %w", prNumber, err)
 	}
-	newBody := stripSignedOffBy(commit.Commit.Message)
+	newBody := stripSignedOffBy(commit.GetCommit().GetMessage())
 
-	// 5. Check idempotency: has the original description already been posted?
-	comments, err := client.GetComments(owner, repo, prNumber)
+	comments, err := client.ListIssueComments(ctx, owner, repo, prNumber)
 	if err != nil {
 		return fmt.Errorf("fetching comments for PR #%d: %w", prNumber, err)
 	}
 	alreadyPosted := false
 	for _, c := range comments {
-		if strings.HasPrefix(c.Body, commentHeader) {
+		if strings.HasPrefix(c.GetBody(), commentHeader) {
 			alreadyPosted = true
 			break
 		}
@@ -112,12 +108,12 @@ func run(client *GitHubClient, owner, repo string, prNumber int, dryRun bool) er
 
 	if dryRun {
 		fmt.Println("=== DRY RUN ===")
-		fmt.Printf("PR #%d by %s\n\n", prNumber, pr.User.Login)
+		fmt.Printf("PR #%d by %s\n\n", prNumber, pr.GetUser().GetLogin())
 		if alreadyPosted {
 			fmt.Println("Comment with original description already exists — would skip posting.")
 		} else {
 			fmt.Println("--- Would post comment ---")
-			fmt.Println(commentHeader + "\n\n" + pr.Body)
+			fmt.Println(commentHeader + "\n\n" + pr.GetBody())
 			fmt.Println("--- End comment ---")
 		}
 		fmt.Println()
@@ -127,10 +123,9 @@ func run(client *GitHubClient, owner, repo string, prNumber int, dryRun bool) er
 		return nil
 	}
 
-	// 6. Post the original description as a comment (if not already done).
 	if !alreadyPosted {
-		commentBody := commentHeader + "\n\n" + pr.Body
-		if err := client.PostComment(owner, repo, prNumber, commentBody); err != nil {
+		commentBody := commentHeader + "\n\n" + pr.GetBody()
+		if err := client.PostComment(ctx, owner, repo, prNumber, commentBody); err != nil {
 			return fmt.Errorf("posting comment on PR #%d: %w", prNumber, err)
 		}
 		fmt.Printf("Posted original description as comment on PR #%d.\n", prNumber)
@@ -138,8 +133,7 @@ func run(client *GitHubClient, owner, repo string, prNumber int, dryRun bool) er
 		fmt.Printf("Original description comment already exists on PR #%d — skipped.\n", prNumber)
 	}
 
-	// 7. Update the PR body to the latest commit message.
-	if err := client.UpdatePRBody(owner, repo, prNumber, newBody); err != nil {
+	if err := client.UpdatePRBody(ctx, owner, repo, prNumber, newBody); err != nil {
 		return fmt.Errorf("updating body of PR #%d: %w", prNumber, err)
 	}
 	fmt.Printf("Updated PR #%d body to latest commit message.\n", prNumber)
@@ -152,15 +146,12 @@ func run(client *GitHubClient, owner, repo string, prNumber int, dryRun bool) er
 // in the merge commit.
 func stripSignedOffBy(msg string) string {
 	lines := strings.Split(msg, "\n")
-	// Trim trailing blank lines first.
 	for len(lines) > 0 && strings.TrimSpace(lines[len(lines)-1]) == "" {
 		lines = lines[:len(lines)-1]
 	}
-	// Remove trailing Signed-off-by lines.
 	for len(lines) > 0 && strings.HasPrefix(lines[len(lines)-1], "Signed-off-by:") {
 		lines = lines[:len(lines)-1]
 	}
-	// Trim any blank lines that preceded the trailers.
 	for len(lines) > 0 && strings.TrimSpace(lines[len(lines)-1]) == "" {
 		lines = lines[:len(lines)-1]
 	}
