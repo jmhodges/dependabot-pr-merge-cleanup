@@ -1,64 +1,83 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"strings"
 	"testing"
+
+	"github.com/google/go-github/v76/github"
 )
 
-// newTestServer returns an httptest.Server that routes requests to handler
-// based on method + path prefix. It also returns a GitHubClient pointed at it.
-func newTestServer(t *testing.T, handler http.HandlerFunc) (*httptest.Server, *GitHubClient) {
+// newTestClient returns an httptest.Server and a ghClient whose go-github
+// instance is pointed at it.
+func newTestClient(t *testing.T, handler http.HandlerFunc) (*httptest.Server, *ghClient) {
 	t.Helper()
 	srv := httptest.NewServer(handler)
-	client := &GitHubClient{
-		BaseURL:    srv.URL,
-		Token:      "test-token",
-		HTTPClient: srv.Client(),
+	gh := github.NewClient(srv.Client()).WithAuthToken("test-token")
+	u, err := url.Parse(srv.URL + "/")
+	if err != nil {
+		t.Fatalf("parse test server URL: %v", err)
 	}
-	return srv, client
+	gh.BaseURL = u
+	gh.UploadURL = u
+	return srv, &ghClient{gh: gh}
 }
 
-func TestGetPR(t *testing.T) {
-	srv, client := newTestServer(t, func(w http.ResponseWriter, r *http.Request) {
+// dependabotCommit builds a RepositoryCommit fixture authored by dependabot.
+func dependabotCommit(sha, msg string) *github.RepositoryCommit {
+	return commitBy(sha, msg, dependabotLogin)
+}
+
+// commitBy builds a RepositoryCommit fixture with the given author login.
+func commitBy(sha, msg, login string) *github.RepositoryCommit {
+	return &github.RepositoryCommit{
+		SHA:    github.Ptr(sha),
+		Commit: &github.Commit{Message: github.Ptr(msg)},
+		Author: &github.User{Login: github.Ptr(login)},
+	}
+}
+
+func TestGhClient_GetPR(t *testing.T) {
+	srv, client := newTestClient(t, func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != "GET" || r.URL.Path != "/repos/owner/repo/pulls/42" {
-			http.Error(w, "not found", http.StatusNotFound)
+			http.Error(w, "not found: "+r.URL.Path, http.StatusNotFound)
 			return
 		}
 		if got := r.Header.Get("Authorization"); got != "Bearer test-token" {
 			t.Errorf("auth header = %q, want Bearer test-token", got)
 		}
-		json.NewEncoder(w).Encode(PR{
-			Body: "some body",
-			User: struct {
-				Login string `json:"login"`
-			}{Login: "dependabot[bot]"},
+		json.NewEncoder(w).Encode(&github.PullRequest{
+			Body: github.Ptr("some body"),
+			User: &github.User{Login: github.Ptr("dependabot[bot]")},
 		})
 	})
 	defer srv.Close()
 
-	pr, err := client.GetPR("owner", "repo", 42)
+	pr, err := client.GetPR(context.Background(), "owner", "repo", 42)
 	if err != nil {
 		t.Fatalf("GetPR: %v", err)
 	}
-	if pr.Body != "some body" {
-		t.Errorf("body = %q, want %q", pr.Body, "some body")
+	if pr.GetBody() != "some body" {
+		t.Errorf("body = %q, want %q", pr.GetBody(), "some body")
 	}
-	if pr.User.Login != "dependabot[bot]" {
-		t.Errorf("login = %q, want %q", pr.User.Login, "dependabot[bot]")
+	if pr.GetUser().GetLogin() != "dependabot[bot]" {
+		t.Errorf("login = %q, want %q", pr.GetUser().GetLogin(), "dependabot[bot]")
 	}
 }
 
-func TestGetPR_NotFound(t *testing.T) {
-	srv, client := newTestServer(t, func(w http.ResponseWriter, r *http.Request) {
+func TestGhClient_GetPR_NotFound(t *testing.T) {
+	srv, client := newTestClient(t, func(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, `{"message":"Not Found"}`, http.StatusNotFound)
 	})
 	defer srv.Close()
 
-	_, err := client.GetPR("owner", "repo", 999)
+	_, err := client.GetPR(context.Background(), "owner", "repo", 999)
 	if err == nil {
 		t.Fatal("expected error for 404")
 	}
@@ -67,148 +86,172 @@ func TestGetPR_NotFound(t *testing.T) {
 	}
 }
 
-// dependabotCommit builds a Commit fixture authored by dependabot.
-func dependabotCommit(sha, msg string) Commit {
-	return commitBy(sha, msg, dependabotLogin)
-}
-
-// commitBy builds a Commit fixture with the given author login.
-func commitBy(sha, msg, login string) Commit {
-	var c Commit
-	c.SHA = sha
-	c.Commit.Message = msg
-	c.Author.Login = login
-	return c
-}
-
-func TestGetLatestDependabotCommit(t *testing.T) {
-	srv, client := newTestServer(t, func(w http.ResponseWriter, r *http.Request) {
+func TestGhClient_LatestDependabotCommit(t *testing.T) {
+	srv, client := newTestClient(t, func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != "GET" || !strings.HasPrefix(r.URL.Path, "/repos/owner/repo/pulls/42/commits") {
 			http.Error(w, "not found", http.StatusNotFound)
 			return
 		}
-		json.NewEncoder(w).Encode([]Commit{
+		json.NewEncoder(w).Encode([]*github.RepositoryCommit{
 			dependabotCommit("aaa", "first commit"),
 			dependabotCommit("bbb", "Bump foo from 1.0 to 2.0"),
 		})
 	})
 	defer srv.Close()
 
-	commit, err := client.GetLatestDependabotCommit("owner", "repo", 42)
+	commit, err := client.LatestDependabotCommit(context.Background(), "owner", "repo", 42)
 	if err != nil {
-		t.Fatalf("GetLatestDependabotCommit: %v", err)
+		t.Fatalf("LatestDependabotCommit: %v", err)
 	}
-	if commit.Commit.Message != "Bump foo from 1.0 to 2.0" {
-		t.Errorf("message = %q, want %q", commit.Commit.Message, "Bump foo from 1.0 to 2.0")
+	if got := commit.GetCommit().GetMessage(); got != "Bump foo from 1.0 to 2.0" {
+		t.Errorf("message = %q, want %q", got, "Bump foo from 1.0 to 2.0")
 	}
 }
 
 // A maintainer's rebase fixup commit on top of a dependabot PR must not
 // shadow the underlying dependabot commit.
-func TestGetLatestDependabotCommit_SkipsNonDependabot(t *testing.T) {
-	srv, client := newTestServer(t, func(w http.ResponseWriter, r *http.Request) {
-		json.NewEncoder(w).Encode([]Commit{
+func TestGhClient_LatestDependabotCommit_SkipsNonDependabot(t *testing.T) {
+	srv, client := newTestClient(t, func(w http.ResponseWriter, r *http.Request) {
+		json.NewEncoder(w).Encode([]*github.RepositoryCommit{
 			dependabotCommit("aaa", "Bump foo from 1.0 to 2.0"),
 			commitBy("bbb", "fix lint", "human-user"),
 		})
 	})
 	defer srv.Close()
 
-	commit, err := client.GetLatestDependabotCommit("owner", "repo", 42)
+	commit, err := client.LatestDependabotCommit(context.Background(), "owner", "repo", 42)
 	if err != nil {
-		t.Fatalf("GetLatestDependabotCommit: %v", err)
+		t.Fatalf("LatestDependabotCommit: %v", err)
 	}
-	if commit.SHA != "aaa" {
-		t.Errorf("sha = %q, want aaa (the dependabot commit)", commit.SHA)
+	if commit.GetSHA() != "aaa" {
+		t.Errorf("sha = %q, want aaa (the dependabot commit)", commit.GetSHA())
 	}
 }
 
 // The dependabot commit may live on an earlier page than the non-dependabot
 // commits that follow it; the filter must keep working across pages.
-func TestGetLatestDependabotCommit_PaginationFiltersAcrossPages(t *testing.T) {
-	var srv *httptest.Server
-	srv, client := newTestServer(t, func(w http.ResponseWriter, r *http.Request) {
+func TestGhClient_LatestDependabotCommit_PaginationFiltersAcrossPages(t *testing.T) {
+	var srvURL string
+	srv, client := newTestClient(t, func(w http.ResponseWriter, r *http.Request) {
 		page := r.URL.Query().Get("page")
 		switch page {
 		case "", "1":
-			nextURL := srv.URL + "/repos/owner/repo/pulls/42/commits?page=2"
-			w.Header().Set("Link", `<`+nextURL+`>; rel="next"`)
-			json.NewEncoder(w).Encode([]Commit{
+			w.Header().Set("Link", fmt.Sprintf(`<%s/repos/owner/repo/pulls/42/commits?page=2>; rel="next"`, srvURL))
+			json.NewEncoder(w).Encode([]*github.RepositoryCommit{
 				dependabotCommit("aaa", "Bump foo from 1.0 to 2.0"),
 			})
 		case "2":
-			json.NewEncoder(w).Encode([]Commit{
+			json.NewEncoder(w).Encode([]*github.RepositoryCommit{
 				commitBy("bbb", "fix lint", "human-user"),
 			})
 		default:
 			http.Error(w, "unexpected page "+page, http.StatusBadRequest)
 		}
 	})
+	srvURL = srv.URL
 	defer srv.Close()
 
-	commit, err := client.GetLatestDependabotCommit("owner", "repo", 42)
+	commit, err := client.LatestDependabotCommit(context.Background(), "owner", "repo", 42)
 	if err != nil {
-		t.Fatalf("GetLatestDependabotCommit: %v", err)
+		t.Fatalf("LatestDependabotCommit: %v", err)
 	}
-	if commit.SHA != "aaa" {
-		t.Errorf("sha = %q, want aaa", commit.SHA)
+	if commit.GetSHA() != "aaa" {
+		t.Errorf("sha = %q, want aaa", commit.GetSHA())
 	}
 }
 
-func TestGetLatestDependabotCommit_NoCommits(t *testing.T) {
-	srv, client := newTestServer(t, func(w http.ResponseWriter, r *http.Request) {
-		json.NewEncoder(w).Encode([]Commit{})
+func TestGhClient_LatestDependabotCommit_NoCommits(t *testing.T) {
+	srv, client := newTestClient(t, func(w http.ResponseWriter, r *http.Request) {
+		json.NewEncoder(w).Encode([]*github.RepositoryCommit{})
 	})
 	defer srv.Close()
 
-	_, err := client.GetLatestDependabotCommit("owner", "repo", 42)
+	_, err := client.LatestDependabotCommit(context.Background(), "owner", "repo", 42)
 	if err == nil {
 		t.Fatal("expected error for empty commits")
 	}
+	if err != errNoDependabotCommits {
+		t.Errorf("err = %v, want errNoDependabotCommits", err)
+	}
 }
 
-func TestGetLatestDependabotCommit_NoDependabotCommits(t *testing.T) {
-	srv, client := newTestServer(t, func(w http.ResponseWriter, r *http.Request) {
-		json.NewEncoder(w).Encode([]Commit{
+func TestGhClient_LatestDependabotCommit_NoDependabotCommits(t *testing.T) {
+	srv, client := newTestClient(t, func(w http.ResponseWriter, r *http.Request) {
+		json.NewEncoder(w).Encode([]*github.RepositoryCommit{
 			commitBy("aaa", "manual change", "human-user"),
 		})
 	})
 	defer srv.Close()
 
-	_, err := client.GetLatestDependabotCommit("owner", "repo", 42)
+	_, err := client.LatestDependabotCommit(context.Background(), "owner", "repo", 42)
 	if err == nil {
 		t.Fatal("expected error when no commits are by dependabot")
 	}
+	if err != errNoDependabotCommits {
+		t.Errorf("err = %v, want errNoDependabotCommits", err)
+	}
 }
 
-func TestGetComments(t *testing.T) {
-	srv, client := newTestServer(t, func(w http.ResponseWriter, r *http.Request) {
+func TestGhClient_ListIssueComments(t *testing.T) {
+	srv, client := newTestClient(t, func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != "GET" {
 			http.Error(w, "bad method", http.StatusMethodNotAllowed)
 			return
 		}
-		comments := []Comment{
-			{Body: "## Original PR Description\n\nold body"},
-		}
-		json.NewEncoder(w).Encode(comments)
+		json.NewEncoder(w).Encode([]*github.IssueComment{
+			{Body: github.Ptr("## Original PR Description\n\nold body")},
+		})
 	})
 	defer srv.Close()
 
-	comments, err := client.GetComments("owner", "repo", 42)
+	comments, err := client.ListIssueComments(context.Background(), "owner", "repo", 42)
 	if err != nil {
-		t.Fatalf("GetComments: %v", err)
+		t.Fatalf("ListIssueComments: %v", err)
 	}
 	if len(comments) != 1 {
 		t.Fatalf("got %d comments, want 1", len(comments))
 	}
-	if !strings.Contains(comments[0].Body, "Original PR Description") {
+	if !strings.Contains(comments[0].GetBody(), "Original PR Description") {
 		t.Error("comment body missing expected content")
 	}
 }
 
-func TestPostComment(t *testing.T) {
+func TestGhClient_ListIssueComments_Paginated(t *testing.T) {
+	var srvURL string
+	srv, client := newTestClient(t, func(w http.ResponseWriter, r *http.Request) {
+		page := r.URL.Query().Get("page")
+		switch page {
+		case "", "1":
+			w.Header().Set("Link", fmt.Sprintf(`<%s/repos/owner/repo/issues/42/comments?page=2>; rel="next"`, srvURL))
+			json.NewEncoder(w).Encode([]*github.IssueComment{
+				{Body: github.Ptr("first")},
+			})
+		case "2":
+			json.NewEncoder(w).Encode([]*github.IssueComment{
+				{Body: github.Ptr("## Original PR Description\n\nstashed")},
+			})
+		default:
+			http.Error(w, "unexpected page="+page, http.StatusBadRequest)
+		}
+	})
+	srvURL = srv.URL
+	defer srv.Close()
+
+	comments, err := client.ListIssueComments(context.Background(), "owner", "repo", 42)
+	if err != nil {
+		t.Fatalf("ListIssueComments: %v", err)
+	}
+	if len(comments) != 2 {
+		t.Fatalf("got %d comments, want 2 across pages", len(comments))
+	}
+	if !strings.HasPrefix(comments[1].GetBody(), "## Original PR Description") {
+		t.Errorf("second-page comment lost: %q", comments[1].GetBody())
+	}
+}
+
+func TestGhClient_PostComment(t *testing.T) {
 	var gotBody string
-	srv, client := newTestServer(t, func(w http.ResponseWriter, r *http.Request) {
+	srv, client := newTestClient(t, func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != "POST" || r.URL.Path != "/repos/owner/repo/issues/42/comments" {
 			http.Error(w, "not found", http.StatusNotFound)
 			return
@@ -216,25 +259,28 @@ func TestPostComment(t *testing.T) {
 		b, _ := io.ReadAll(r.Body)
 		gotBody = string(b)
 		w.WriteHeader(http.StatusCreated)
+		w.Write([]byte("{}"))
 	})
 	defer srv.Close()
 
-	err := client.PostComment("owner", "repo", 42, "hello world")
+	err := client.PostComment(context.Background(), "owner", "repo", 42, "hello world")
 	if err != nil {
 		t.Fatalf("PostComment: %v", err)
 	}
 	var payload struct {
 		Body string `json:"body"`
 	}
-	json.Unmarshal([]byte(gotBody), &payload)
+	if err := json.Unmarshal([]byte(gotBody), &payload); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
 	if payload.Body != "hello world" {
 		t.Errorf("posted body = %q, want %q", payload.Body, "hello world")
 	}
 }
 
-func TestUpdatePRBody(t *testing.T) {
+func TestGhClient_UpdatePRBody(t *testing.T) {
 	var gotBody string
-	srv, client := newTestServer(t, func(w http.ResponseWriter, r *http.Request) {
+	srv, client := newTestClient(t, func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != "PATCH" || r.URL.Path != "/repos/owner/repo/pulls/42" {
 			http.Error(w, "not found", http.StatusNotFound)
 			return
@@ -242,216 +288,215 @@ func TestUpdatePRBody(t *testing.T) {
 		b, _ := io.ReadAll(r.Body)
 		gotBody = string(b)
 		w.WriteHeader(http.StatusOK)
+		w.Write([]byte("{}"))
 	})
 	defer srv.Close()
 
-	err := client.UpdatePRBody("owner", "repo", 42, "new body")
+	err := client.UpdatePRBody(context.Background(), "owner", "repo", 42, "new body")
 	if err != nil {
 		t.Fatalf("UpdatePRBody: %v", err)
 	}
 	var payload struct {
 		Body string `json:"body"`
 	}
-	json.Unmarshal([]byte(gotBody), &payload)
+	if err := json.Unmarshal([]byte(gotBody), &payload); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
 	if payload.Body != "new body" {
 		t.Errorf("patched body = %q, want %q", payload.Body, "new body")
 	}
 }
 
-func TestAPIURL(t *testing.T) {
-	client := &GitHubClient{BaseURL: "https://api.github.com"}
-	tests := []struct {
-		name     string
-		segments []string
-		want     string
-	}{
-		{
-			"normal path",
-			[]string{"repos", "owner", "repo", "pulls", "42"},
-			"https://api.github.com/repos/owner/repo/pulls/42",
-		},
-		{
-			"owner with slash is escaped",
-			[]string{"repos", "owner/evil", "repo", "pulls", "1"},
-			"https://api.github.com/repos/owner%2Fevil/repo/pulls/1",
-		},
-		{
-			"repo with special chars",
-			[]string{"repos", "owner", "repo?q=1#frag", "pulls", "1"},
-			"https://api.github.com/repos/owner/repo%3Fq=1%23frag/pulls/1",
-		},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			got, err := client.apiURL(tt.segments...)
-			if err != nil {
-				t.Fatalf("apiURL: %v", err)
-			}
-			if got.String() != tt.want {
-				t.Errorf("apiURL(%v) = %q, want %q", tt.segments, got.String(), tt.want)
-			}
-		})
-	}
+// --- run() orchestration tests drive a real ghClient against httptest. ---
+
+// runFixture serves the standard PR/commits/comments GET endpoints from the
+// configured fixtures, captures the bodies of mutating requests, and fails
+// the test on anything unexpected.
+type runFixture struct {
+	pr       *github.PullRequest
+	commits  []*github.RepositoryCommit
+	comments []*github.IssueComment
+
+	commentPosted bool
+	postedBody    string
+	bodyUpdated   bool
+	updatedBody   string
 }
 
-func TestParseLinkNext(t *testing.T) {
-	tests := []struct {
-		name   string
-		header string
-		want   string
-	}{
-		{"empty", "", ""},
-		{"no next", `<https://api.github.com/foo?page=1>; rel="prev"`, ""},
-		{
-			"has next",
-			`<https://api.github.com/foo?page=1>; rel="prev", <https://api.github.com/foo?page=3>; rel="next"`,
-			"https://api.github.com/foo?page=3",
-		},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			got := parseLinkNext(tt.header)
-			if got != tt.want {
-				t.Errorf("parseLinkNext(%q) = %q, want %q", tt.header, got, tt.want)
-			}
-		})
-	}
-}
-
-// TestHappyPathIntegration exercises the full orchestration logic with a mock
-// GitHub API.
-func TestHappyPathIntegration(t *testing.T) {
-	var commentPosted, bodyUpdated bool
-	srv, client := newTestServer(t, func(w http.ResponseWriter, r *http.Request) {
+func (f *runFixture) handler(t *testing.T, owner, repo string, number int) http.HandlerFunc {
+	t.Helper()
+	prPath := fmt.Sprintf("/repos/%s/%s/pulls/%d", owner, repo, number)
+	commitsPath := prPath + "/commits"
+	commentsPath := fmt.Sprintf("/repos/%s/%s/issues/%d/comments", owner, repo, number)
+	return func(w http.ResponseWriter, r *http.Request) {
 		switch {
-		case r.Method == "GET" && r.URL.Path == "/repos/owner/repo/pulls/10":
-			json.NewEncoder(w).Encode(PR{
-				Body: "Bumps [foo](https://example.com) from 1.0 to 2.0.\n\n---\n\nChangelog...",
-				User: struct {
-					Login string `json:"login"`
-				}{Login: "dependabot[bot]"},
-			})
-
-		case r.Method == "GET" && strings.HasPrefix(r.URL.Path, "/repos/owner/repo/pulls/10/commits"):
-			json.NewEncoder(w).Encode([]Commit{
-				dependabotCommit("abc", "Bump foo from 1.0 to 2.0\n\nSigned-off-by: dependabot[bot] <support@github.com>"),
-			})
-
-		case r.Method == "GET" && strings.HasPrefix(r.URL.Path, "/repos/owner/repo/issues/10/comments"):
-			json.NewEncoder(w).Encode([]Comment{})
-
-		case r.Method == "POST" && r.URL.Path == "/repos/owner/repo/issues/10/comments":
-			commentPosted = true
-			b, _ := io.ReadAll(r.Body)
-			var payload struct {
+		case r.Method == "GET" && r.URL.Path == prPath:
+			json.NewEncoder(w).Encode(f.pr)
+		case r.Method == "GET" && r.URL.Path == commitsPath:
+			json.NewEncoder(w).Encode(f.commits)
+		case r.Method == "GET" && r.URL.Path == commentsPath:
+			json.NewEncoder(w).Encode(f.comments)
+		case r.Method == "POST" && r.URL.Path == commentsPath:
+			f.commentPosted = true
+			var p struct {
 				Body string `json:"body"`
 			}
-			json.Unmarshal(b, &payload)
-			if !strings.HasPrefix(payload.Body, "## Original PR Description") {
-				t.Errorf("comment missing header, got: %s", payload.Body[:50])
-			}
+			json.NewDecoder(r.Body).Decode(&p)
+			f.postedBody = p.Body
 			w.WriteHeader(http.StatusCreated)
-
-		case r.Method == "PATCH" && r.URL.Path == "/repos/owner/repo/pulls/10":
-			bodyUpdated = true
-			b, _ := io.ReadAll(r.Body)
-			var payload struct {
+			w.Write([]byte("{}"))
+		case r.Method == "PATCH" && r.URL.Path == prPath:
+			f.bodyUpdated = true
+			var p struct {
 				Body string `json:"body"`
 			}
-			json.Unmarshal(b, &payload)
-			if payload.Body != "Bump foo from 1.0 to 2.0" {
-				t.Errorf("updated body = %q, want commit message without Signed-off-by", payload.Body)
-			}
+			json.NewDecoder(r.Body).Decode(&p)
+			f.updatedBody = p.Body
 			w.WriteHeader(http.StatusOK)
-
+			w.Write([]byte("{}"))
 		default:
-			http.Error(w, "unexpected: "+r.Method+" "+r.URL.Path, http.StatusNotFound)
+			t.Errorf("unexpected request: %s %s", r.Method, r.URL.Path)
+			http.Error(w, "unexpected", http.StatusInternalServerError)
 		}
-	})
+	}
+}
+
+func TestHappyPathIntegration(t *testing.T) {
+	f := &runFixture{
+		pr: &github.PullRequest{
+			Body: github.Ptr("Bumps [foo](https://example.com) from 1.0 to 2.0.\n\n---\n\nChangelog..."),
+			User: &github.User{Login: github.Ptr(dependabotLogin)},
+		},
+		commits: []*github.RepositoryCommit{
+			dependabotCommit("abc", "Bump foo from 1.0 to 2.0\n\nSigned-off-by: dependabot[bot] <support@github.com>"),
+		},
+	}
+	srv, client := newTestClient(t, f.handler(t, "owner", "repo", 10))
 	defer srv.Close()
 
-	err := run(client, "owner", "repo", 10, false)
-	if err != nil {
+	if err := run(context.Background(), client, "owner", "repo", 10, false); err != nil {
 		t.Fatalf("run: %v", err)
 	}
-	if !commentPosted {
+	if !f.commentPosted {
 		t.Error("comment was not posted")
 	}
-	if !bodyUpdated {
+	if !strings.HasPrefix(f.postedBody, "## Original PR Description") {
+		t.Errorf("comment missing header, got: %s", f.postedBody)
+	}
+	if !f.bodyUpdated {
 		t.Error("PR body was not updated")
+	}
+	if f.updatedBody != "Bump foo from 1.0 to 2.0" {
+		t.Errorf("updated body = %q, want commit message without Signed-off-by", f.updatedBody)
+	}
+}
+
+// A maintainer's fixup commit sitting on top of a dependabot commit must not
+// become the new PR body. This goes through the full run() flow, exercising
+// LatestDependabotCommit's author filter end-to-end.
+func TestHappyPath_IgnoresNonDependabotFixup(t *testing.T) {
+	f := &runFixture{
+		pr: &github.PullRequest{
+			Body: github.Ptr("Bumps foo from 1.0 to 2.0."),
+			User: &github.User{Login: github.Ptr(dependabotLogin)},
+		},
+		commits: []*github.RepositoryCommit{
+			dependabotCommit("aaa", "Bump foo from 1.0 to 2.0"),
+			commitBy("bbb", "fix lint", "human-user"),
+		},
+	}
+	srv, client := newTestClient(t, f.handler(t, "owner", "repo", 10))
+	defer srv.Close()
+
+	if err := run(context.Background(), client, "owner", "repo", 10, false); err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	if f.updatedBody != "Bump foo from 1.0 to 2.0" {
+		t.Errorf("updated body = %q, want the dependabot commit message (not the human fixup)", f.updatedBody)
 	}
 }
 
 func TestNotDependabot(t *testing.T) {
-	srv, client := newTestServer(t, func(w http.ResponseWriter, r *http.Request) {
-		if r.Method == "GET" && r.URL.Path == "/repos/owner/repo/pulls/10" {
-			json.NewEncoder(w).Encode(PR{
-				Body: "some body",
-				User: struct {
-					Login string `json:"login"`
-				}{Login: "human-user"},
-			})
-			return
-		}
-		t.Errorf("unexpected request: %s %s", r.Method, r.URL.Path)
-		http.Error(w, "unexpected", http.StatusInternalServerError)
-	})
+	f := &runFixture{
+		pr: &github.PullRequest{
+			Body: github.Ptr("some body"),
+			User: &github.User{Login: github.Ptr("human-user")},
+		},
+	}
+	srv, client := newTestClient(t, f.handler(t, "owner", "repo", 10))
 	defer srv.Close()
 
-	err := run(client, "owner", "repo", 10, false)
-	if err != nil {
-		t.Fatalf("run: %v (expected nil for non-dependabot)", err)
+	if err := run(context.Background(), client, "owner", "repo", 10, false); err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	if f.commentPosted || f.bodyUpdated {
+		t.Error("must not modify non-dependabot PRs")
 	}
 }
 
 func TestEmptyBody(t *testing.T) {
-	srv, client := newTestServer(t, func(w http.ResponseWriter, r *http.Request) {
-		if r.Method == "GET" && r.URL.Path == "/repos/owner/repo/pulls/10" {
-			json.NewEncoder(w).Encode(PR{
-				Body: "",
-				User: struct {
-					Login string `json:"login"`
-				}{Login: "dependabot[bot]"},
-			})
-			return
-		}
-		t.Errorf("unexpected request: %s %s", r.Method, r.URL.Path)
-		http.Error(w, "unexpected", http.StatusInternalServerError)
-	})
+	f := &runFixture{
+		pr: &github.PullRequest{
+			Body: github.Ptr(""),
+			User: &github.User{Login: github.Ptr(dependabotLogin)},
+		},
+	}
+	srv, client := newTestClient(t, f.handler(t, "owner", "repo", 10))
 	defer srv.Close()
 
-	err := run(client, "owner", "repo", 10, false)
-	if err != nil {
-		t.Fatalf("run: %v (expected nil for empty body)", err)
+	if err := run(context.Background(), client, "owner", "repo", 10, false); err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	if f.commentPosted || f.bodyUpdated {
+		t.Error("must not modify PRs with empty bodies")
 	}
 }
 
 func TestDryRun(t *testing.T) {
-	srv, client := newTestServer(t, func(w http.ResponseWriter, r *http.Request) {
-		switch {
-		case r.Method == "GET" && r.URL.Path == "/repos/owner/repo/pulls/10":
-			json.NewEncoder(w).Encode(PR{
-				Body: "old body",
-				User: struct {
-					Login string `json:"login"`
-				}{Login: "dependabot[bot]"},
-			})
-		case r.Method == "GET" && strings.HasPrefix(r.URL.Path, "/repos/owner/repo/pulls/10/commits"):
-			json.NewEncoder(w).Encode([]Commit{
-				dependabotCommit("abc", "Bump bar from 1.0 to 2.0"),
-			})
-		case r.Method == "GET" && strings.HasPrefix(r.URL.Path, "/repos/owner/repo/issues/10/comments"):
-			json.NewEncoder(w).Encode([]Comment{})
-		default:
-			t.Errorf("unexpected write request in dry-run: %s %s", r.Method, r.URL.Path)
-			http.Error(w, "unexpected", http.StatusInternalServerError)
-		}
-	})
+	f := &runFixture{
+		pr: &github.PullRequest{
+			Body: github.Ptr("old body"),
+			User: &github.User{Login: github.Ptr(dependabotLogin)},
+		},
+		commits: []*github.RepositoryCommit{
+			dependabotCommit("abc", "Bump bar from 1.0 to 2.0"),
+		},
+	}
+	srv, client := newTestClient(t, f.handler(t, "owner", "repo", 10))
 	defer srv.Close()
 
-	err := run(client, "owner", "repo", 10, true)
-	if err != nil {
+	if err := run(context.Background(), client, "owner", "repo", 10, true); err != nil {
 		t.Fatalf("run dry-run: %v", err)
+	}
+	if f.commentPosted || f.bodyUpdated {
+		t.Error("dry-run must not call mutating endpoints")
+	}
+}
+
+func TestIdempotency_SkipsDuplicateComment(t *testing.T) {
+	f := &runFixture{
+		pr: &github.PullRequest{
+			Body: github.Ptr("old body"),
+			User: &github.User{Login: github.Ptr(dependabotLogin)},
+		},
+		commits: []*github.RepositoryCommit{
+			dependabotCommit("abc", "Bump baz from 1.0 to 2.0"),
+		},
+		comments: []*github.IssueComment{
+			{Body: github.Ptr("## Original PR Description\n\nprevious body")},
+		},
+	}
+	srv, client := newTestClient(t, f.handler(t, "owner", "repo", 10))
+	defer srv.Close()
+
+	if err := run(context.Background(), client, "owner", "repo", 10, false); err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	if f.commentPosted {
+		t.Error("comment was posted again despite idempotency guard")
+	}
+	if !f.bodyUpdated {
+		t.Error("PR body should still be updated even when comment already exists")
 	}
 }
 
@@ -499,45 +544,5 @@ func TestStripSignedOffBy(t *testing.T) {
 				t.Errorf("stripSignedOffBy(%q) = %q, want %q", tt.in, got, tt.want)
 			}
 		})
-	}
-}
-
-func TestIdempotency_SkipsDuplicateComment(t *testing.T) {
-	var commentPosted bool
-	srv, client := newTestServer(t, func(w http.ResponseWriter, r *http.Request) {
-		switch {
-		case r.Method == "GET" && r.URL.Path == "/repos/owner/repo/pulls/10":
-			json.NewEncoder(w).Encode(PR{
-				Body: "old body",
-				User: struct {
-					Login string `json:"login"`
-				}{Login: "dependabot[bot]"},
-			})
-		case r.Method == "GET" && strings.HasPrefix(r.URL.Path, "/repos/owner/repo/pulls/10/commits"):
-			json.NewEncoder(w).Encode([]Commit{
-				dependabotCommit("abc", "Bump baz from 1.0 to 2.0"),
-			})
-		case r.Method == "GET" && strings.HasPrefix(r.URL.Path, "/repos/owner/repo/issues/10/comments"):
-			// Return a comment that already has the Original PR Description header.
-			json.NewEncoder(w).Encode([]Comment{
-				{Body: "## Original PR Description\n\nprevious body"},
-			})
-		case r.Method == "POST" && r.URL.Path == "/repos/owner/repo/issues/10/comments":
-			commentPosted = true
-			w.WriteHeader(http.StatusCreated)
-		case r.Method == "PATCH" && r.URL.Path == "/repos/owner/repo/pulls/10":
-			w.WriteHeader(http.StatusOK)
-		default:
-			http.Error(w, "unexpected", http.StatusNotFound)
-		}
-	})
-	defer srv.Close()
-
-	err := run(client, "owner", "repo", 10, false)
-	if err != nil {
-		t.Fatalf("run: %v", err)
-	}
-	if commentPosted {
-		t.Error("comment was posted again despite idempotency guard")
 	}
 }
