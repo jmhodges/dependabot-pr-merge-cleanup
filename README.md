@@ -95,6 +95,10 @@ go build -o dependabot-pr-merge-cleanup .
 go test ./...
 ```
 
+## Releasing
+
+Maintainers: see [RELEASING.md](RELEASING.md) for how to cut a new version.
+
 ## License
 
 MIT
