@@ -86,14 +86,7 @@ jobs:
           ## Next steps to finish releasing \`$VERSION\`
 
           1. Review and merge this PR.
-          2. After it merges, tag the release on \`main\`:
-             \`\`\`sh
-             git checkout main
-             git pull
-             git tag $VERSION
-             git push origin $VERSION
-             \`\`\`
-          3. (Optional) Create a GitHub Release pointing at the \`$VERSION\` tag.
+          2. Create a GitHub Release pointing at a new \`$VERSION\` tag.
 
           The Docker image is already published at \`ghcr.io/jmhodges/dependabot-pr-merge-cleanup:$VERSION\` and the image build is tagged \`image-$VERSION\`.
           EOF
