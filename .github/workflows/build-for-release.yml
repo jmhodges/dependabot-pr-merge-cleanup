@@ -66,6 +66,7 @@ jobs:
           sed -i "s|image: .*|image: 'docker://ghcr.io/jmhodges/dependabot-pr-merge-cleanup:${{ needs.tag-and-publish.outputs.version }}'|" action.yml
 
       - name: Create PR
+        id: create-pr
         uses: peter-evans/create-pull-request@v8.1.1
         with:
           title: "update action.yml image to ${{ needs.tag-and-publish.outputs.version }}"
@@ -73,3 +74,27 @@ jobs:
           branch: update-image-${{ needs.tag-and-publish.outputs.version }}
           commit-message: "update action.yml to image ${{ needs.tag-and-publish.outputs.version }}"
           token: ${{ secrets.CREATE_PULL_REQUEST_TOKEN }}
+
+      - name: Comment release next steps on PR
+        if: steps.create-pr.outputs.pull-request-operation == 'created'
+        env:
+          GH_TOKEN: ${{ secrets.CREATE_PULL_REQUEST_TOKEN }}
+          PR_NUMBER: ${{ steps.create-pr.outputs.pull-request-number }}
+          VERSION: ${{ needs.tag-and-publish.outputs.version }}
+        run: |
+          gh pr comment "$PR_NUMBER" --body "$(cat <<EOF
+          ## Next steps to finish releasing \`$VERSION\`
+
+          1. Review and merge this PR.
+          2. After it merges, tag the release on \`main\`:
+             \`\`\`sh
+             git checkout main
+             git pull
+             git tag $VERSION
+             git push origin $VERSION
+             \`\`\`
+          3. (Optional) Create a GitHub Release pointing at the \`$VERSION\` tag.
+
+          The Docker image is already published at \`ghcr.io/jmhodges/dependabot-pr-merge-cleanup:$VERSION\` and the image build is tagged \`image-$VERSION\`.
+          EOF
+          )"
