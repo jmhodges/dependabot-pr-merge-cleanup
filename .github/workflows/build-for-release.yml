@@ -31,7 +31,7 @@ jobs:
           echo "value=$VERSION" >> "$GITHUB_OUTPUT"
 
       - name: Checkout
-        uses: actions/checkout@v6
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
 
       - name: Create and push git tag
         run: |
@@ -39,14 +39,14 @@ jobs:
           git push origin "image-${{ steps.version.outputs.value }}"
 
       - name: Log in to GHCR
-        uses: docker/login-action@v4
+        uses: docker/login-action@650006c6eb7dba73a995cc03b0b2d7f5ca915bee # v4.2.0
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Build and push Docker image
-        uses: docker/build-push-action@v7
+        uses: docker/build-push-action@f9f3042f7e2789586610d6e8b85c8f03e5195baf # v7.2.0
         with:
           context: .
           push: true
@@ -57,7 +57,7 @@ jobs:
     needs: tag-and-publish
     steps:
       - name: Checkout main
-        uses: actions/checkout@v6
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
         with:
           ref: main
 
@@ -67,7 +67,7 @@ jobs:
 
       - name: Create PR
         id: create-pr
-        uses: peter-evans/create-pull-request@v8.1.1
+        uses: peter-evans/create-pull-request@5f6978faf089d4d20b00c7766989d076bb2fc7f1 # v8.1.1
         with:
           title: "update action.yml image to ${{ needs.tag-and-publish.outputs.version }}"
           body: "Updates action.yml to reference image `ghcr.io/jmhodges/dependabot-pr-merge-cleanup:${{ needs.tag-and-publish.outputs.version }}`, built from tag `image-${{ needs.tag-and-publish.outputs.version }}`."
